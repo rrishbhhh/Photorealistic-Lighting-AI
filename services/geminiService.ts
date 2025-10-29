@@ -4,27 +4,12 @@ import { ImageFile, LightingEffect, SunlightIntensity, SunlightDirection } from 
 
 function getDirectionalPrompt(direction: SunlightDirection): string {
   switch (direction) {
-    case "top":
-      return "from the top";
-    case "left":
-      return "from the left";
-    case "right":
-      return "from the right";
-    case "bottom":
-      return "from the bottom";
-    case "center":
-      return "emanating from the center, like a spotlight";
+    case "top": return "from the top";
+    case "left": return "from the left";
+    case "right": return "from the right";
+    case "bottom": return "from the bottom";
+    case "center": return "emanating from the center, like a spotlight";
   }
-}
-
-// ✅ Helper to convert File -> Base64
-async function toBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (error) => reject(error);
-  });
 }
 
 export async function applyLightingEffect(
@@ -34,50 +19,49 @@ export async function applyLightingEffect(
   sunlightDirection: SunlightDirection
 ): Promise<string> {
   try {
-    // ✅ Compress the image before sending to API
-    const compressedFile = await imageCompression(image.file, {
-      maxSizeMB: 2,
-      maxWidthOrHeight: 1024,
-      useWebWorker: true,
-    });
+    // 🧠 1. Compress the image before sending
+    const compressedFile = await imageCompression(
+      new File([Uint8Array.from(atob(image.base64), c => c.charCodeAt(0))], image.name, { type: image.mimeType }),
+      { maxSizeMB: 2, maxWidthOrHeight: 2048, useWebWorker: true }
+    );
 
-    const base64Image = await toBase64(compressedFile);
+    const compressedBase64 = await imageCompression.getDataUrlFromFile(compressedFile);
+    const base64Data = compressedBase64.split(",")[1];
 
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
     const model = "gemini-2.5-flash-image";
 
+    let prompt = "";
     const intensityMap: Record<SunlightIntensity, string> = {
       1: "natural, realistic sunlight",
       2: "bright, vibrant sunlight",
       3: "intense, dramatic sunlight with strong highlights",
     };
 
-    let prompt = "";
-    const directionPrompt = getDirectionalPrompt(sunlightDirection);
-    const intensityPrompt = intensityMap[sunlightIntensity];
-
     switch (effect) {
-      case "sunlight":
+      case "sunlight": {
+        const intensityPrompt = intensityMap[sunlightIntensity];
+        const directionPrompt = getDirectionalPrompt(sunlightDirection);
         prompt = `Add photorealistic, ${intensityPrompt} to this image. The light source should be coming ${directionPrompt}. Ensure the highlights and shadows are consistent with this light direction.`;
         break;
+      }
       case "shadows":
-        prompt =
-          "Add deep, natural-looking photorealistic shadows to this image. The shadows should add a sense of depth and realism.";
+        prompt = "Add deep, natural-looking photorealistic shadows to this image.";
         break;
-      case "sunlight-and-shadows":
-        prompt = `Add both photorealistic ${intensityPrompt} and deep shadows. The light source should come ${directionPrompt}.`;
+      case "sunlight-and-shadows": {
+        const intensityPrompt = intensityMap[sunlightIntensity];
+        const directionPrompt = getDirectionalPrompt(sunlightDirection);
+        prompt = `Add ${intensityPrompt} and shadows to this image. Light source ${directionPrompt}.`;
         break;
+      }
       case "remove-sunlight":
-        prompt =
-          "Recreate the image with soft, diffuse lighting — no harsh sunlight or direct highlights.";
+        prompt = "Remove harsh sunlight, keeping lighting soft and neutral.";
         break;
       case "remove-shadows":
-        prompt =
-          "Reduce deep shadows and make lighting evenly balanced across the image.";
+        prompt = "Soften all dark shadows to create even lighting.";
         break;
       case "remove-sunlight-and-shadows":
-        prompt =
-          "Neutralize all lighting — remove sunlight and shadows completely for a flat-lit image.";
+        prompt = "Neutralize all lighting, creating flat, diffuse lighting.";
         break;
     }
 
@@ -85,12 +69,7 @@ export async function applyLightingEffect(
       model,
       contents: {
         parts: [
-          {
-            inlineData: {
-              data: base64Image.split(",")[1],
-              mimeType: image.mimeType,
-            },
-          },
+          { inlineData: { data: base64Data, mimeType: image.mimeType } },
           { text: prompt },
         ],
       },
@@ -99,18 +78,13 @@ export async function applyLightingEffect(
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
-        const base64ImageBytes: string = part.inlineData.data;
-        const mimeType = part.inlineData.mimeType;
-        return `data:${mimeType};base64,${base64ImageBytes}`;
+        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
       }
     }
 
-    throw new Error("No image was generated by the AI.");
-  } catch (error) {
+    throw new Error("No image was generated. Try again with a smaller image or different effect.");
+  } catch (error: any) {
     console.error("Error calling Gemini API:", error);
-    if (error instanceof Error) {
-      return Promise.reject(new Error(`Failed to generate image: ${error.message}`));
-    }
-    return Promise.reject(new Error("Unknown error occurred while generating the image."));
+    throw new Error(error.message || "Failed to generate image");
   }
 }
